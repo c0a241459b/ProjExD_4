@@ -136,6 +136,7 @@ class Bomb(pg.sprite.Sprite):
         self.rect.centerx = emy.rect.centerx
         self.rect.centery = emy.rect.centery+emy.rect.height//2
         self.speed = 6
+        self.state = "active"#EMPの発動時の判定用
 
     def update(self):
         """
@@ -250,6 +251,122 @@ class Score:
     def update(self, screen: pg.Surface):
         self.image = self.font.render(f"Score: {self.value}", 0, self.color)
         screen.blit(self.image, self.rect)
+class EMP:
+    #電磁パルス（EMP）に関するクラス
+    def __init__(self, emys: pg.sprite.Group, bombs: pg.sprite.Group, screen: pg.Surface):
+        """
+        EMP攻撃を初期化する
+        引数1 emys：敵機のグループ
+        引数2 bombs：爆弾のグループ
+        引数3 screen：画面Surface
+        """
+        self.emys = emys
+        self.bombs = bombs
+        self.screen = screen
+        self.image = pg.Surface((WIDTH, HEIGHT)) # 手順1：空のSurfaceを生成
+        pg.draw.rect(self.image, (255, 255, 0), (0, 0, WIDTH, HEIGHT))# 手順2：rectをdraw
+        self.image.set_alpha(128)# 手順3：透明度を設定
+
+    def activate(self):
+        """
+        EMPを発動する
+        敵機を無効化（爆弾投下不可、ラプラシアンフィルタ適用）
+        爆弾を無効化（速度半減、衝突時に消滅）
+        """
+        # 敵機を無効化
+        for emy in self.bombs:#なんか逆だった
+            emy.interval = float('inf')  # 爆弾投下を無効化
+            emy.image = pg.transform.laplacian(emy.image)  # ラプラシアンフィルタ
+        
+        # 爆弾を無効化
+        for bomb in self.emys:#こっちもなんか逆だったから逆に
+            bomb.speed //= 2  # 速度を半減
+            bomb.state = "inactive"  # 爆弾無効化状態
+
+        # 画面全体に黄色の半透明矩形を描画
+        self.screen.blit(self.image, [0, 0])
+        pg.display.update()
+        time.sleep(0.05)  # 0.05秒表示
+
+
+class Shield(pg.sprite.Sprite):
+    """
+    防御壁に関するクラス
+    こうかとんの前に防御壁を出現させ、爆弾の着弾を防ぐ
+    """
+    def __init__(self, bird: Bird, life: int):
+        """
+        防御壁Surfaceを生成する
+        引数1 bird：防御壁を展開するこうかとん
+        引数2 life：防御壁の持続時間
+        """
+        super().__init__()
+        self.life = life
+        self.bird = bird  # こうかとんの参照を保持
+        
+        # 防御壁のサイズ（横幅20、高さはこうかとんの2倍）
+        self.width = 20
+        self.height = bird.rect.height * 2
+        
+        # 初期画像を生成
+        self._update_image()
+
+    def _update_image(self):
+        """
+        こうかとんの向きに応じて防御壁の画像を更新する
+        """
+        # 空のSurfaceを生成
+        self.image = pg.Surface((self.width, self.height), pg.SRCALPHA)
+        
+        # 青い矩形を描画
+        pg.draw.rect(self.image, (0, 0, 255), (0, 0, self.width, self.height))
+        
+        # こうかとんの向きを取得
+        vx, vy = self.bird.dire
+        
+        # 角度を計算
+        angle = math.degrees(math.atan2(-vy, vx))
+        
+        # Surfaceを回転
+        self.image = pg.transform.rotozoom(self.image, angle, 1.0)
+                
+        # 回転後のrectを取得
+        self.rect = self.image.get_rect()
+        
+        # こうかとんの中心からこうかとん1体分ずらした位置に配置
+        self.rect.center = (self.bird.rect.centerx + self.bird.rect.width * vx,
+                           self.bird.rect.centery + self.bird.rect.height * vy)
+
+    def update(self):
+        """
+        防御壁の持続時間を減算し、0未満になったら消滅させる
+        こうかとんの位置と向きに追従する
+        """
+        self.life -= 1
+        if self.life < 0:
+            self.kill()
+        else:
+            self._update_image()  # 毎フレーム画像を更新してこうかとんに追従
+
+
+class Gravity(pg.sprite.Sprite):
+    """
+    画面全体を覆う重力場を発生させる
+    """
+    def __init__(self, life: int):
+        super().__init__()
+        self.image = pg.Surface((WIDTH, HEIGHT))
+        pg.draw.rect(self.image, (0, 0, 0), (0, HEIGHT, WIDTH, 0))
+        self.image.set_alpha(50)
+        self.rect = self.image.get_rect()
+        self.life = life
+        
+    
+    def update(self):
+        self.life -= 1
+        if self.life < 0:
+            self.kill()
+
 
 
 class Shield(pg.sprite.Sprite):
@@ -337,7 +454,6 @@ def main():
     screen = pg.display.set_mode((WIDTH, HEIGHT))
     bg_img = pg.image.load(f"fig/pg_bg.jpg")
     score = Score()
-
     bird = Bird(3, (900, 400))
     bombs = pg.sprite.Group()
     beams = pg.sprite.Group()
@@ -369,6 +485,10 @@ def main():
                     shields.add(Shield(bird, 400))
                     score.value -= 50  # スコア消費
         
+            if event.type == pg.KEYDOWN and event.key == pg.K_e and score.value > 20:
+                emp = EMP(bombs, emys, screen)
+                emp.activate()
+                score.value -= 20#スコア減らす
         screen.blit(bg_img, [0, 0])
 
         if tmr%200== 0:  # 200フレームに1回，敵機を出現させる
@@ -412,6 +532,8 @@ def main():
                 exps.add(Explosion(bomb, 50))  # 爆発エフェクト
                 score.value += 1  # スコア1アップ
             else:  # 通常状態の場合
+                if bomb.state == "inactive":#爆弾無効化状態の時弾が消滅する用
+                    continue
                 bird.change_img(8, screen)  # こうかとん悲しみエフェクト
                 score.update(screen)
                 pg.display.update()
